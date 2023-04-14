@@ -1,0 +1,214 @@
+---
+title: "Milliman DS take home project Yiwen Mo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+#Read data
+
+```{r , echo=FALSE}
+library(corrplot)
+library(caret)
+rm(list = ls())
+setwd('/Users/chrissymo/Downloads')
+df = read.csv('stroke data.csv')
+str(df)
+
+```
+
+#Preprocess data
+In this step, 
+-I converted dependent variable to factor and relevel;
+-Check distribution and found it has imbalance issue as there are only 1.8% of data has stroke;
+-Check missing values and found there 1462 rows have missing values. I deleted the rows that have missing values as it is only a small propotion of dataset;
+-Dealt with category variables and converted them to dummy variables;
+-Finally,I splited dataset into training and testing dataset.
+
+```{r , echo=FALSE}
+summary(df)
+#convert to factor
+df$stroke <- as.factor(df$stroke)
+levels(df$stroke) = c("No","Yes")
+df$stroke <- relevel(df$stroke, ref="Yes")
+
+#check distribution
+prop.table(table(df$stroke)) #1.8% yes, 98.2%no ->imbalance dataset
+barplot(table(df$stroke),main="Stroke Distribution")
+barplot(table(df$gender),main="Gender Distribution")
+barplot(table(df$smoking_status),main="Smoking Status Distribution")
+
+#check and exclude missing values
+sum(is.na(df)) #1462 rows have missing values
+df = na.omit(df) #delete the rows having missing values
+
+#dummy variables
+df.dmodel <- dummyVars(~., data=df[,2:14], fullRank=T) #exclude id&stroke columns
+df.d <- as.data.frame(predict(df.dmodel,df))
+df.d$stroke <- df$stroke
+str(df.d)
+
+#split dataset into traning and test data sets
+set.seed(199)
+trainIndex <- createDataPartition(df.d$stroke, p=.7, list=F)
+df.train <- df.d[trainIndex,]
+df.test <- df.d[-trainIndex,]
+```
+
+
+#training control set-up
+Set up control function, used 10-fold cross validation;
+Used ROC as traning metric and the control setting to train GLM, LDA, KNN and Decition Tree models;
+
+```{r, echo=FALSE}
+#twoClassSummary: classification measurement:ROC, sensity,specification
+ctrl <- trainControl(method = "cv", number=10, summaryFunction=twoClassSummary,
+                     classProbs=T, savePredictions=T) #saving predictions from each resample fold
+```
+
+
+#glm
+```{r, echo=FALSE}
+##glm
+set.seed(199) # USE same SEED ACROSS trains to ensure identical cv folds
+df.glm <-  train(stroke ~., data=df.train, method="glm", family="binomial", metric="ROC", trControl=ctrl)
+summary(df.glm)
+varImp(df.glm)
+df.glm
+#calculate resampled accuracy/confusion matrix using extracted predictions from resampling
+confusionMatrix(df.glm$pred$pred, df.glm$pred$obs)
+
+```
+
+#LDA
+```{r, echo=FALSE}
+##linear discriminant analysis
+set.seed(199)
+df.lda <-  train(stroke ~ ., data=df.train, method="lda", metric="ROC", trControl=ctrl)
+df.lda
+varImp(df.lda)
+confusionMatrix(df.lda$pred$pred, df.lda$pred$obs) 
+
+```
+
+
+#KNN
+```{r, echo=FALSE}
+#k nearest neighbors classification
+set.seed(199) 
+
+#set values of k to search through, K 1 to 15
+k.grid <- expand.grid(k=1:50)
+
+df.knn <-  train(stroke ~ ., data=df.train, method="knn", metric="ROC", trControl=ctrl, tuneLength=10) #let caret decide 10 best parameters to search
+df.knn #k=23
+plot(df.knn)
+getTrainPerf(df.knn)
+
+confusionMatrix(df.knn$pred$pred, df.knn$pred$obs) 
+
+```
+
+
+#Decistion Tree
+```{r, echo=FALSE}
+library("rpart.plot")
+set.seed(199)
+df.dt <- train(x=df.train[,-20],y=df.train$stroke, method="rpart", trControl=ctrl,metric="ROC")
+df.dt  
+confusionMatrix(df.dt$pred$pred,df.dt$pred$obs)
+# plot the model
+rpart.plot(df.dt$finalModel, type=4, extra=2, clip.right.labs=FALSE, varlen=0, faclen=3)
+```
+
+
+#Compare models
+Compared models using ROC, Sensitivity and Specificity;
+Plot ROC curves and compared;
+GLM looks like the best choice.
+
+```{r, echo=FALSE}
+#lets compare all resampling approaches
+df.models <- list("GLM"=df.glm, "LDA"=df.lda,"KNN"=df.knn,"Decision Tree" =df.dt)
+df.resamples = resamples(df.models)
+
+#plot performance comparisons
+bwplot(df.resamples, metric="ROC") 
+bwplot(df.resamples, metric="Sens") #predicting default dependant on threshold
+bwplot(df.resamples, metric="Spec") 
+
+#calculate ROC curves on resampled data
+
+df.glm.roc<- roc(response= df.glm$pred$obs, predictor=df.glm$pred$Yes)
+df.lda.roc<- roc(response= df.lda$pred$obs, predictor=df.lda$pred$Yes)
+#when model has parameters make sure to select final parameter value
+df.knn.roc<- roc(response= df.knn$pred[df.knn$pred$k==23,]$obs, predictor=df.knn$pred[df.knn$pred$k==23,]$Yes) 
+df.dt.roc<- roc(response= df.dt$pred$obs, predictor=df.dt$pred$Yes)
+
+dev.off()
+#build to combined ROC plot with resampled ROC curves
+plot(df.glm.roc, legacy.axes=T)
+plot(df.lda.roc, add=T, col="Blue")
+plot(df.knn.roc, add=T, col="Green")
+plot(df.dt.roc, add=T, col="Red")
+legend(x=.2, y=.5, legend=c("GLM", "LDA", "KNN", "Decision Tree"), col=c("black","blue","green","red"),lty=1)
+
+```
+
+#Deal with imbalance data using threshold moving
+Like what I mentioned earlier, it has imbalance issues. In this project, I dealt with imbalance data using threshold moving - selected a optimal threshold and increased sensitivity as it is a health care diagnostic problem, we tend to minimize type II error(False Negative). After adjusting threshold, the sensitivity increased. 
+
+```{r, echo=FALSE}
+#GLM looks like the best choice 
+#lets identify a more optimal cut-off (current resampled confusion matrix), low sensitivity
+confusionMatrix(df.glm$pred$pred, df.glm$pred$obs)
+
+#extract threshold from roc curve  get threshold at coordinates top left most corner
+df.glm.Thresh<- coords(df.glm.roc, x="best", best.method="closest.topleft")
+df.glm.Thresh #0.0200838
+
+#lets make new predictions with this cut-off and recalculate confusion matrix
+df.glm.newpreds <- factor(ifelse(df.glm$pred$Yes > 0.0200838, "Yes", "No"))
+#recalculate confusion matrix with new cut off predictions
+confusionMatrix(df.glm.newpreds, df.glm$pred$obs) 
+#sensitivity increases to 78.71% by reducing threshold to 0.0200838 from 0.5
+
+```
+
+#Prediction using test dataset
+Applied GLM model on test dataset and adjusted threshold for prediction.
+
+```{r, echo=FALSE}
+### TEST DATA PERFORMANCE
+#lets see how this cut off works on the test data
+#predict probabilities on test set with log trained model
+#Assign the selected final model
+finalmodel <- df.lda
+finalmodel.roc <- df.glm.roc
+
+test.pred.prob <- predict(finalmodel, df.test, type="prob")
+test.pred.class <- predict(finalmodel, df.test) #predict classes with default .5 cutoff
+
+#calculate performance with confusion matrix
+confusionMatrix(test.pred.class, df.test$stroke)#Sensitivity : 0.0312500
+
+#let draw ROC curve of training and test performance of logit model
+test.roc<- roc(response= df.test$stroke, predictor=test.pred.prob[[1]]) #assumes postive class Yes is reference level
+plot(test.roc, legacy.axes=T,col="red")
+plot(finalmodel.roc, add=T, col="blue")
+legend(x=.4, y=.2, legend=c("Test ROC", "Train ROC"), col=c("red", "blue"),lty=1)
+
+#test performance slightly higher than resample
+auc(test.roc)
+auc(df.glm.roc)
+
+#calculate test confusion matrix using thresholds from resampled data
+test.pred.class.newthresh <- factor(ifelse(test.pred.prob$Yes > 0.0200838, "Yes", "No"))
+#recalculate confusion matrix with new cut off predictions
+confusionMatrix(test.pred.class.newthresh, df.test$stroke) #Sensitivity : 0.70312 
+# sensitivity increase from 0.0312500 to 0.70312
+```
+

@@ -1,5 +1,5 @@
 ---
-title: "Milliman DS take home project Yiwen Mo"
+title: "Stroke Classification"
 output: html_document
 ---
 
